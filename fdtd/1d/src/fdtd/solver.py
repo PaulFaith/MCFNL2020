@@ -10,12 +10,15 @@ L = 0 # Lower
 U = 1 # Upper
 
 class Fields: 
-    def __init__(self, e, h):
+    def __init__(self, e, h, P, D, S):
         self.e = e
         self.h = h
-    
+        self.P = P
+        self.D = D
+        self.S = S
+
     def get(self):
-        return (self.e, self.h)
+        return (self.e, self.h, self.P, self.D, self.S)
 
 class Solver:
     
@@ -62,7 +65,10 @@ class Solver:
             source["index"] = ids
 
         self.old = Fields(e = values,
-                          h = np.zeros( mesh.pos.size-1 ) )
+                          h = np.zeros( mesh.pos.size-1 ),
+                          P = np.zeros( mesh.pos.size-1 ),
+                          D = np.zeros( mesh.pos.size-1 ),
+                          S = np.zeros( mesh.pos.size-1 ) )
 
 
     def solve(self, finalTime):
@@ -71,6 +77,12 @@ class Solver:
         dt = self._dt()
         numberOfTimeSteps = int(finalTime / dt)
         for n in range(numberOfTimeSteps):
+            self._updateD(t, dt)
+            t += dt/2.0
+            self._updateP(t, dt)
+            t += dt/2.0
+            self._updateS(t, dt)
+            t += dt/2.0
             self._updateE(t, dt)
             t += dt/2.0
             self._updateH(t, dt)
@@ -98,10 +110,10 @@ class Solver:
         return res
 
     def _updateE(self, t, dt):
-        (e, h) = self.old.get()
+        (e, h, P, D, S) = self.old.get()
         eNew = np.zeros( self.old.e.shape )
         cE = dt / sp.epsilon_0 / self._mesh.steps()
-        eNew[1:-1] = e[1:-1] + cE * (h[1:] - h[:-1])
+        eNew[1:-1] = e[1:-1] + (D[1:] - (D[:-1])-(P[1:] - P[:-1]))/(5.25*2.25 + 0.7*.07*(e[1:] - e[:-1])*(e[1:] - e[:-1])+5.25*(S[1:] - S[:-1]))
         
         # Boundary conditions
         for bound in self._mesh.bounds:
@@ -121,6 +133,10 @@ class Solver:
                     eNew[source["index"]] += Solver._gaussian(t, \
                         magnitude["gaussianDelay"], \
                         magnitude["gaussianSpread"] )       
+                # Soliton source signal that travels in a nonlineal medium
+                elif magnitude["type"] == "soliton":
+                    eNew[source["index"]] += Solver._soliton(t, \
+                        magnitude["solitonDelay"])
                 else:
                     raise ValueError(\
                     "Invalid source magnitude type: " + magnitude["type"])
@@ -134,11 +150,41 @@ class Solver:
         
     def _updateH(self, t, dt):      
         hNew = np.zeros( self.old.h.shape )
-        (e, h) = self.old.get()
+        (e, h, P, D, S) = self.old.get()
         cH = dt / sp.mu_0 / self._mesh.steps()
         hNew[:] = h[:] + cH * (e[1:] - e[:-1])
         h[:] = hNew[:]
-            
+
+    def _updateD(self, t, dt):
+        DNew = np.zeros( self.old.D.shape )
+        (e, h, P, D, S) = self.old.get()
+        cD = dt*sp.epsilon_0 / self._mesh.steps()
+        DNew[:] = D[:] + cD*(h[1:] - h[:-1])
+        D[:] = DNew[:]
+
+    def _updateP(self, t, dt):
+        PNew = np.zeros( self.old.P.shape )
+        (e, h, P, D, S) = self.old.get()
+        cP = dt/ self._mesh.steps()
+        Ap = (2-4e14*4e14*cP*cP)/(2e9*cP+1) 
+        Bp = (2e9*cP-1)/(2e9*cP+1)
+        Cp = (4e14*4e14*cP*cP)/(2e9*cP+1)
+        PNew[:] = P[:] + Ap*(P[1:] - P[:-1]) + Bp*(P[0:] - P[:-2]) + Cp*(e[1:] - e[:-1]) 
+        P[:] = PNew[:]        
+    
+    def _updateS(self, t, dt):
+        SNew = np.zeros( self.old.S.shape )
+        (e, h, P, D, S) = self.old.get()
+        dRam=1/32e-12
+        wRam=sp.sqrt((12.2e-12*12.2e-12+32e-12*32e-12)/(12.2e-12*12.2e-12*32e-12*32e-12))
+        cS = dt/ self._mesh.steps()
+        Ap = (2-wRam*wRam*cS*cS)/(dRam*cS+1) 
+        Bp = (dRam*cS-1)/(dRam*cS+1)
+        Cp = ((1-.7)*wRam*wRam*.07*cS*cS)/(dRam*cS+1)
+        SNew[:] = P[:] + Ap*(S[1:] - S[:-1]) + Bp*(S[0:] - S[:-2]) + Cp*(e[1:] - e[:-1])*(e[1:] - e[:-1])
+        S[:] = SNew[:]
+
+    
     def _updateProbes(self, t):
         for p in self._probes:
             if "samplingPeriod" not in p or \
@@ -156,3 +202,6 @@ class Solver:
     
     def movingGaussian(x,t,c,center,A,spread):
         return A*np.exp(-(((x-center)-c*t)**2 /(2*spread**2)))
+    
+    def _soliton(x,delay):
+        return np.exp( - (x-delay)**2)
